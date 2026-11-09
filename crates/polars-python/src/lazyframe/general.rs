@@ -767,7 +767,7 @@ impl PyLazyFrame {
     }
 
     #[cfg(feature = "async")]
-    #[pyo3(signature = (engine, maintain_order, chunk_size, lazy, split_by = None))]
+    #[pyo3(signature = (engine, maintain_order, chunk_size, lazy, split_by = None, prefetch = None))]
     fn collect_batches(
         &self,
         py: Python<'_>,
@@ -776,6 +776,7 @@ impl PyLazyFrame {
         chunk_size: Option<NonZeroUsize>,
         lazy: bool,
         split_by: Option<Wrap<PlSmallStr>>,
+        prefetch: Option<NonZeroUsize>,
     ) -> PyResult<PyCollectBatches> {
         py.enter_polars(|| {
             let ldf = self.ldf.read().clone();
@@ -788,6 +789,7 @@ impl PyLazyFrame {
                     chunk_size,
                     lazy,
                     split_by.map(|s| s.0),
+                    prefetch,
                 )
                 .map_err(PyPolarsErr::from)?;
 

@@ -159,6 +159,7 @@ class Engine(ABC):
         maintain_order: bool = True,
         chunk_size: int | None = None,
         split_by: str | None = None,
+        prefetch: int | None = None,
         lazy: bool = False,
     ) -> _CollectBatches:
         """Execute `lf`, yielding its result in batches."""
@@ -437,6 +438,7 @@ class _LocalEngine(Engine):
         maintain_order: bool = True,
         chunk_size: int | None = None,
         split_by: str | None = None,
+        prefetch: int | None = None,
         lazy: bool = False,
     ) -> _CollectBatches:
         optimizations = self._with_monitoring(optimizations)
@@ -447,6 +449,7 @@ class _LocalEngine(Engine):
                 maintain_order=maintain_order,
                 chunk_size=chunk_size,
                 split_by=split_by,
+                prefetch=prefetch,
                 lazy=lazy,
             )
         )

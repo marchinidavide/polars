@@ -763,6 +763,9 @@ impl LazyFrame {
     /// If `split_by` is set, batches are split at every change of that column
     /// instead of by row count.
     ///
+    /// `prefetch` sets how many batches the producer may buffer ahead of the
+    /// consumer. Peak memory grows by at most that many batches; defaults to 1.
+    ///
     /// If lazy is true the query will not start until the first poll (or until
     /// start is called on CollectBatches).
     #[cfg(feature = "async")]
@@ -773,8 +776,9 @@ impl LazyFrame {
         chunk_size: Option<NonZeroUsize>,
         lazy: bool,
         split_by: Option<PlSmallStr>,
+        prefetch: Option<NonZeroUsize>,
     ) -> PolarsResult<CollectBatches> {
-        let (send, recv) = sync_channel(1);
+        let (send, recv) = sync_channel(prefetch.map_or(1, NonZeroUsize::get));
         let runner_send = send.clone();
         let ldf = self.sink_batches(
             PlanCallback::new(move |df| {

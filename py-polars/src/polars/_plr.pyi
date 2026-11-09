@@ -1000,6 +1000,7 @@ class PyLazyFrame:
         chunk_size: int | None,
         lazy: bool,
         split_by: str | None = None,
+        prefetch: int | None = None,
     ) -> PyCollectBatches: ...
     def sink_parquet(
         self,

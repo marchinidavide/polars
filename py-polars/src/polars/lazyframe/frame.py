@@ -4192,6 +4192,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | None = None,
+        prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: bool = False,
         engine: EngineType = "auto",
@@ -4224,6 +4225,11 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             sorted by this column so that each batch holds a single value;
             requires `maintain_order=True` and cannot be combined with
             `chunk_size`.
+        prefetch
+            The number of batches to buffer ahead of the consumer. The producer
+            may run up to this many batches ahead, so peak memory grows by at
+            most that many batches. Defaults to `1`, which already lets the
+            producer prepare the next batch while the current one is processed.
         maintain_order
             Maintain the order in which data is processed.
             Setting this to `False` will be slightly faster.
@@ -4263,6 +4269,10 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         >>> for df in lf.collect_batches():
         ...     print(df)  # doctest: +SKIP
         """
+        if prefetch is not None and prefetch < 1:
+            msg = "prefetch must be at least 1"
+            raise ValueError(msg)
+
         engine_ = _select_engine(engine)
 
         if engine_.name == "auto":
@@ -4274,6 +4284,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             maintain_order=maintain_order,
             chunk_size=chunk_size,
             split_by=split_by,
+            prefetch=prefetch,
             lazy=lazy,
         )
 

@@ -362,3 +362,33 @@ def test_split_by_null_keys_across_morsels(engine: EngineType) -> None:
 
     assert [f.height for f in frames] == [n - 1, 1]
     assert_frame_equal(pl.concat(frames), df)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+@pytest.mark.parametrize("prefetch", [1, 2, 8])
+def test_collect_batches_prefetch(engine: EngineType, prefetch: int) -> None:
+    df = pl.DataFrame({"x": range(6)})
+
+    frames = list(
+        df.lazy().collect_batches(chunk_size=2, prefetch=prefetch, engine=engine)
+    )
+
+    assert [f["x"].to_list() for f in frames] == [[0, 1], [2, 3], [4, 5]]
+
+
+@pytest.mark.parametrize("prefetch", [0, -1])
+def test_collect_batches_prefetch_invalid(prefetch: int) -> None:
+    lf = pl.DataFrame({"x": range(3)}).lazy()
+
+    with pytest.raises(ValueError, match="prefetch"):
+        list(lf.collect_batches(prefetch=prefetch))
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_collect_batches_prefetch_with_split_by(engine: EngineType) -> None:
+    df = pl.DataFrame({"ts": [1, 1, 2, 2, 2, 3], "x": range(6)})
+
+    frames = list(df.lazy().collect_batches(split_by="ts", prefetch=4, engine=engine))
+
+    assert [f["ts"].to_list() for f in frames] == [[1, 1], [2, 2, 2], [3]]
+    assert_frame_equal(pl.concat(frames), df)
