@@ -506,3 +506,15 @@ def test_restore_defaults_resets_runtime_only_options() -> None:
 
     assert _select_engine("auto").name == "auto"
     assert builder.DEFAULT_CREDENTIAL_PROVIDER == "auto"
+
+
+def test_engine_collect_batches_signature_matches_lazyframe() -> None:
+    lf_names = {
+        p.name
+        for p in inspect.signature(pl.LazyFrame.collect_batches).parameters.values()
+    } - {"self", "engine"}
+    engine_names = {
+        p.name for p in inspect.signature(pl.Engine.collect_batches).parameters.values()
+    } - {"self", "lf"}
+
+    assert engine_names == lf_names

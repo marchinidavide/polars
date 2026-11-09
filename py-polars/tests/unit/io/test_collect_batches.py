@@ -392,3 +392,33 @@ def test_collect_batches_prefetch_with_split_by(engine: EngineType) -> None:
 
     assert [f["ts"].to_list() for f in frames] == [[1, 1], [2, 2, 2], [3]]
     assert_frame_equal(pl.concat(frames), df)
+
+
+def test_collect_batches_prefetch_lazy() -> None:
+    df = pl.DataFrame({"x": range(6)})
+
+    frames = list(df.lazy().collect_batches(chunk_size=2, prefetch=4, lazy=True))
+
+    assert [f.height for f in frames] == [2, 2, 2]
+
+
+@pytest.mark.parametrize("prefetch", [1, 4])
+def test_collect_batches_prefetch_error(prefetch: int) -> None:
+    def boom(s: pl.Series) -> pl.Series:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    lf = pl.LazyFrame({"x": [1, 2]}).select(
+        pl.col("x").map_batches(boom, return_dtype=pl.Int64)
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        list(lf.collect_batches(prefetch=prefetch))
+
+
+def test_collect_batches_prefetch_early_break() -> None:
+    df = pl.DataFrame({"x": range(100)})
+
+    batches = df.lazy().collect_batches(chunk_size=1, prefetch=4)
+    assert next(iter(batches))["x"].to_list() == [0]
+    del batches
