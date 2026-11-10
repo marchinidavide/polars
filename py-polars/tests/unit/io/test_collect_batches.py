@@ -553,3 +553,28 @@ def test_sink_batches_prefetch_error_with_full_queue(error_at: int) -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         df.lazy().sink_batches(callback, chunk_size=1, prefetch=32, engine="streaming")
+
+
+def test_collect_batches_close() -> None:
+    df = pl.DataFrame({"x": range(100)})
+    batches = df.lazy().collect_batches(chunk_size=10, prefetch=4)
+
+    assert next(batches)["x"].to_list() == list(range(10))
+    batches.close()
+
+    with pytest.raises(StopIteration):
+        next(batches)
+    with pytest.raises(ValueError, match="closed"):
+        batches.__arrow_c_stream__()
+
+    batches.close()  # idempotent
+
+
+def test_collect_batches_context_manager() -> None:
+    df = pl.DataFrame({"x": range(100)})
+
+    with df.lazy().collect_batches(chunk_size=10, prefetch=4) as batches:
+        assert next(batches)["x"].to_list() == list(range(10))
+
+    with pytest.raises(StopIteration):
+        next(batches)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import IO, TYPE_CHECKING, Any, ClassVar, Literal, overload
+from typing import IO, TYPE_CHECKING, Any, ClassVar, Literal, Self, overload
 
 from polars._dependencies import import_optional
 from polars._utils.async_ import _AioDataFrameResult, _GeventDataFrameResult
@@ -24,6 +24,7 @@ from polars.lazyframe.sink_plan import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
     from pathlib import Path
+    from types import TracebackType
 
     from rmm.mr import DeviceMemoryResource  # type: ignore[import-not-found]
 
@@ -693,15 +694,35 @@ class _CollectBatches:
     """Iterator over the batches produced by `Engine.collect_batches`."""
 
     def __init__(self, inner: PyCollectBatches) -> None:
-        self._inner = inner
+        self._inner: PyCollectBatches | None = inner
 
     def __iter__(self) -> _CollectBatches:
         return self
 
     def __next__(self) -> DataFrame:
+        if self._inner is None:
+            raise StopIteration
         return wrap_df(next(self._inner))
 
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Stop the query and release the producer."""
+        self._inner = None
+
     def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+        if self._inner is None:
+            msg = "this batch iterator is closed"
+            raise ValueError(msg)
         return self._inner.__arrow_c_stream__(requested_schema)
 
 
