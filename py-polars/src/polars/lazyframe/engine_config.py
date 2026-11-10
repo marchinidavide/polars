@@ -84,6 +84,13 @@ def _validate_engine(engine: EngineType) -> None:
     _engine_from_name(engine)
 
 
+def _validate_prefetch(prefetch: int | None) -> None:
+    """Validate a batch prefetch depth."""
+    if prefetch is not None and prefetch < 1:
+        msg = "prefetch must be at least 1"
+        raise ValueError(msg)
+
+
 def _select_engine(engine: EngineType) -> Engine:
     """
     Resolve an engine argument or configured affinity to an `Engine`.

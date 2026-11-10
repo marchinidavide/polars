@@ -100,6 +100,7 @@ from polars.lazyframe.engine_config import (
     _eager_engine,
     _select_engine,
     _validate_engine,
+    _validate_prefetch,
 )
 from polars.lazyframe.group_by import LazyGroupBy
 from polars.lazyframe.opt_flags import DEFAULT_QUERY_OPT_FLAGS, REMOVED_OLD_OPT_FLAGS
@@ -4173,9 +4174,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         >>> lf = pl.scan_csv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
         >>> lf.sink_batches(lambda df: print(df))  # doctest: +SKIP
         """
-        if prefetch is not None and prefetch < 1:
-            msg = "prefetch must be at least 1"
-            raise ValueError(msg)
+        _validate_prefetch(prefetch)
 
         if lazy:
             # A lazy sink only attaches a sink node to the plan; an engine is
@@ -4219,7 +4218,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         This allows streaming results that are larger than RAM to be written to disk.
 
         The query will always be fully executed unless `stop` is called, so you should
-        call next until all chunks have been seen.
+        call next until all chunks have been seen. The returned iterator can be used
+        as a context manager; closing it stops the query and releases the producer.
 
         .. engine-support:: streaming
 
@@ -4284,9 +4284,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         >>> for df in lf.collect_batches():
         ...     print(df)  # doctest: +SKIP
         """
-        if prefetch is not None and prefetch < 1:
-            msg = "prefetch must be at least 1"
-            raise ValueError(msg)
+        _validate_prefetch(prefetch)
 
         engine_ = _select_engine(engine)
 
