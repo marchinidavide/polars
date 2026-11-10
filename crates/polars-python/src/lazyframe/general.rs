@@ -775,7 +775,7 @@ impl PyLazyFrame {
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
         lazy: bool,
-        split_by: Option<Wrap<PlSmallStr>>,
+        split_by: Option<Vec<Wrap<PlSmallStr>>>,
         prefetch: Option<NonZeroUsize>,
     ) -> PyResult<PyCollectBatches> {
         py.enter_polars(|| {
@@ -788,7 +788,7 @@ impl PyLazyFrame {
                     maintain_order,
                     chunk_size,
                     lazy,
-                    split_by.map(|s| s.0),
+                    split_by.map(|columns| columns.into_iter().map(|s| s.0).collect()),
                     prefetch,
                 )
                 .map_err(PyPolarsErr::from)?;
@@ -997,7 +997,7 @@ impl PyLazyFrame {
         function: Py<PyAny>,
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
-        split_by: Option<Wrap<PlSmallStr>>,
+        split_by: Option<Vec<Wrap<PlSmallStr>>>,
         prefetch: Option<NonZeroUsize>,
     ) -> PyResult<PyLazyFrame> {
         let ldf = self.ldf.read().clone();
@@ -1006,7 +1006,7 @@ impl PyLazyFrame {
                 PlanCallback::new_python(PythonObject(function)),
                 maintain_order,
                 chunk_size,
-                split_by.map(|s| s.0),
+                split_by.map(|columns| columns.into_iter().map(|s| s.0).collect()),
                 prefetch,
             )
         })

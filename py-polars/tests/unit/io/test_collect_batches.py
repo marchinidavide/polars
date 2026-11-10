@@ -578,3 +578,109 @@ def test_collect_batches_context_manager() -> None:
 
     with pytest.raises(StopIteration):
         next(batches)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_split_by_multiple_columns(engine: EngineType) -> None:
+    df = pl.DataFrame(
+        {
+            "sym": ["a", "a", "a", "b", "b", "b"],
+            "day": [1, 1, 2, 1, 1, 2],
+            "x": range(6),
+        }
+    )
+
+    frames = list(df.lazy().collect_batches(split_by=["sym", "day"], engine=engine))
+
+    assert [(f["sym"][0], f["day"][0]) for f in frames] == [
+        ("a", 1),
+        ("a", 2),
+        ("b", 1),
+        ("b", 2),
+    ]
+    assert all(f.select(["sym", "day"]).n_unique() == 1 for f in frames)
+    assert_frame_equal(pl.concat(frames), df)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_sink_batches_split_by_multiple_columns(engine: EngineType) -> None:
+    df = pl.DataFrame(
+        {
+            "sym": ["a", "a", "a", "b", "b", "b"],
+            "day": [1, 1, 2, 1, 1, 2],
+            "x": range(6),
+        }
+    )
+    frames: list[pl.DataFrame] = []
+
+    df.lazy().sink_batches(
+        lambda frame: frames.append(frame),
+        split_by=("sym", "day"),
+        prefetch=2,
+        engine=engine,
+    )
+
+    assert [(f["sym"][0], f["day"][0]) for f in frames] == [
+        ("a", 1),
+        ("a", 2),
+        ("b", 1),
+        ("b", 2),
+    ]
+    assert_frame_equal(pl.concat(frames), df)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_split_by_multiple_columns_across_morsels(engine: EngineType) -> None:
+    n = 400_000
+    df = pl.DataFrame(
+        {
+            "sym": [i // 100_000 for i in range(n)],
+            "day": [i // 7 for i in range(n)],
+            "x": range(n),
+        }
+    )
+
+    frames = list(
+        df.lazy().collect_batches(split_by=["sym", "day"], prefetch=8, engine=engine)
+    )
+
+    assert len(frames) == df.select(["sym", "day"]).unique().height
+    assert all(
+        f["sym"][0] == f["sym"][-1] and f["day"][0] == f["day"][-1] for f in frames
+    )
+    assert_frame_equal(pl.concat(frames), df)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_split_by_multiple_columns_key_across_morsels(engine: EngineType) -> None:
+    n = 200_000
+    df = pl.DataFrame(
+        {"sym": [0] * n, "day": [i // 7 for i in range(n)], "x": range(n)}
+    )
+
+    frames = list(
+        df.lazy().collect_batches(split_by=["sym", "day"], prefetch=8, engine=engine)
+    )
+
+    assert len(frames) == df["day"].n_unique()
+    assert all(
+        f["sym"][0] == f["sym"][-1] and f["day"][0] == f["day"][-1] for f in frames
+    )
+    assert_frame_equal(pl.concat(frames), df)
+
+
+@pytest.mark.parametrize(
+    ("bad", "exc"),
+    [
+        ([], ValueError),
+        (["sym", "sym"], ValueError),
+        ([1], TypeError),
+    ],
+)
+def test_split_by_multiple_columns_invalid(
+    bad: list[object], exc: type[Exception]
+) -> None:
+    lf = pl.DataFrame({"sym": [1, 2], "day": [1, 2]}).lazy()
+
+    with pytest.raises(exc, match="split_by"):
+        list(lf.collect_batches(split_by=bad))

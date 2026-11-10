@@ -999,7 +999,7 @@ class PyLazyFrame:
         maintain_order: bool,
         chunk_size: int | None,
         lazy: bool,
-        split_by: str | None = None,
+        split_by: Sequence[str] | None = None,
         prefetch: int | None = None,
     ) -> PyCollectBatches: ...
     def sink_parquet(
@@ -1059,7 +1059,7 @@ class PyLazyFrame:
         function: Callable[[PyDataFrame], bool],
         maintain_order: bool,
         chunk_size: int | None,
-        split_by: str | None = None,
+        split_by: Sequence[str] | None = None,
         prefetch: int | None = None,
     ) -> PyLazyFrame: ...
     def sink_iceberg(self, sink_state_obj: IcebergSinkState) -> PyLazyFrame: ...

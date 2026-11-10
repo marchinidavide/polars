@@ -42,7 +42,7 @@ pub struct CallbackSinkNode {
     sink: Option<SinkSender>,
     worker: Option<PrefetchWorker>,
     maintain_order: bool,
-    split_by: Option<PlSmallStr>,
+    split_by: Option<Vec<PlSmallStr>>,
 
     buffer: DataFrame,
     chunk_size: Option<NonZeroUsize>,
@@ -54,7 +54,7 @@ impl CallbackSinkNode {
         function: PlanCallback<DataFrame, bool>,
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
-        split_by: Option<PlSmallStr>,
+        split_by: Option<Vec<PlSmallStr>>,
         prefetch: Option<NonZeroUsize>,
     ) -> PolarsResult<Self> {
         let (sink, worker) = match prefetch {
@@ -179,13 +179,13 @@ impl ComputeNode for CallbackSinkNode {
                 let (sf, _, _, consume_token) = m.into_inner();
                 let morsel = sf.into_df().await;
 
-                if let Some(split_by) = self.split_by.clone() {
+                if let Some(keys) = self.split_by.clone() {
                     if morsel.height() == 0 {
                         drop(consume_token);
                         continue;
                     }
 
-                    let key = split_by.as_str();
+                    let key = keys.as_slice();
                     let mut complete = Vec::new();
 
                     if self.buffer.height() == 0 {
@@ -194,9 +194,19 @@ impl ComputeNode for CallbackSinkNode {
                         complete.append(&mut groups);
                     } else {
                         let continues = {
-                            let last = self.buffer.column(key)?.get(self.buffer.height() - 1)?;
-                            let first = morsel.column(key)?.get(0)?;
-                            last == first
+                            let mut continues = true;
+                            for key in &keys {
+                                let last = self
+                                    .buffer
+                                    .column(key.as_str())?
+                                    .get(self.buffer.height() - 1)?;
+                                let first = morsel.column(key.as_str())?.get(0)?;
+                                if last != first {
+                                    continues = false;
+                                    break;
+                                }
+                            }
+                            continues
                         };
 
                         if !continues {

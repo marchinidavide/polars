@@ -354,7 +354,7 @@ def _sink_batches_plan(
     function: Callable[[DataFrame], bool | None],
     *,
     chunk_size: int | None,
-    split_by: str | None,
+    split_by: list[str] | None,
     prefetch: int | None,
     maintain_order: bool,
 ) -> LazyFrame:

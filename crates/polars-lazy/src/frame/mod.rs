@@ -760,7 +760,7 @@ impl LazyFrame {
 
     /// Collect the query in batches.
     ///
-    /// If `split_by` is set, batches are split at every change of that column
+    /// If `split_by` is set, batches are split at every change of those columns
     /// instead of by row count.
     ///
     /// `prefetch` sets how many batches the producer may buffer ahead of the
@@ -775,7 +775,7 @@ impl LazyFrame {
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
         lazy: bool,
-        split_by: Option<PlSmallStr>,
+        split_by: Option<Vec<PlSmallStr>>,
         prefetch: Option<NonZeroUsize>,
     ) -> PolarsResult<CollectBatches> {
         let (send, recv) = sync_channel(prefetch.map_or(1, NonZeroUsize::get));
@@ -822,7 +822,7 @@ impl LazyFrame {
         function: PlanCallback<DataFrame, bool>,
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
-        split_by: Option<PlSmallStr>,
+        split_by: Option<Vec<PlSmallStr>>,
         prefetch: Option<NonZeroUsize>,
     ) -> PolarsResult<Self> {
         use polars_plan::prelude::sink::CallbackSinkType;
@@ -831,7 +831,11 @@ impl LazyFrame {
             !matches!(self.logical_plan, DslPlan::Sink { .. }),
             InvalidOperation: "cannot create a sink on top of another sink"
         );
-        if split_by.is_some() {
+        if let Some(split_by) = &split_by {
+            polars_ensure!(
+                !split_by.is_empty(),
+                InvalidOperation: "split_by requires at least one column"
+            );
             polars_ensure!(
                 maintain_order,
                 InvalidOperation: "split_by requires maintain_order=true"

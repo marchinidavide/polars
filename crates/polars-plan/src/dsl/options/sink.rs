@@ -243,7 +243,7 @@ pub struct CallbackSinkType {
     pub maintain_order: bool,
     pub chunk_size: Option<NonZeroUsize>,
     #[cfg_attr(feature = "serde", serde(default))]
-    pub split_by: Option<PlSmallStr>,
+    pub split_by: Option<Vec<PlSmallStr>>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub prefetch: Option<NonZeroUsize>,
 }

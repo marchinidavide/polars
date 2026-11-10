@@ -98,6 +98,7 @@ from polars.datatypes.group import DataTypeGroup
 from polars.exceptions import InvalidOperationError, PerformanceWarning
 from polars.lazyframe.engine_config import (
     _eager_engine,
+    _normalize_split_by,
     _select_engine,
     _validate_engine,
     _validate_prefetch,
@@ -4069,7 +4070,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None = None,
-        split_by: str | None = None,
+        split_by: str | Sequence[str] | None = None,
         prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: Literal[False] = ...,
@@ -4083,7 +4084,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None = None,
-        split_by: str | None = None,
+        split_by: str | Sequence[str] | None = None,
         prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: Literal[True],
@@ -4097,7 +4098,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None = None,
-        split_by: str | None = None,
+        split_by: str | Sequence[str] | None = None,
         prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: bool = False,
@@ -4128,10 +4129,10 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         chunk_size
             The number of rows that are buffered before the callback is called.
         split_by
-            Split batches at every change of this column. The data must be
-            sorted by this column so that each batch holds a single value;
-            requires `maintain_order=True` and cannot be combined with
-            `chunk_size`.
+            Split batches at every change of these columns. The data must be
+            sorted by all columns (lexicographically) so that each batch holds
+            a single key tuple; requires `maintain_order=True` and cannot be
+            combined with `chunk_size`.
         prefetch
             The number of batches to buffer ahead of the callback. The callback
             runs on a dedicated worker thread, so the query keeps producing
@@ -4175,6 +4176,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         >>> lf.sink_batches(lambda df: print(df))  # doctest: +SKIP
         """
         _validate_prefetch(prefetch)
+        split_by = _normalize_split_by(split_by)
 
         if lazy:
             # A lazy sink only attaches a sink node to the plan; an engine is
@@ -4205,7 +4207,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         self,
         *,
         chunk_size: int | None = None,
-        split_by: str | None = None,
+        split_by: str | Sequence[str] | None = None,
         prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: bool = False,
@@ -4236,10 +4238,10 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         chunk_size
             The number of rows that are buffered before a chunk is given.
         split_by
-            Split batches at every change of this column. The data must be
-            sorted by this column so that each batch holds a single value;
-            requires `maintain_order=True` and cannot be combined with
-            `chunk_size`.
+            Split batches at every change of these columns. The data must be
+            sorted by all columns (lexicographically) so that each batch holds
+            a single key tuple; requires `maintain_order=True` and cannot be
+            combined with `chunk_size`.
         prefetch
             The number of batches to buffer ahead of the consumer. The producer
             may run up to this many batches ahead, so peak memory grows by at
@@ -4285,6 +4287,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         ...     print(df)  # doctest: +SKIP
         """
         _validate_prefetch(prefetch)
+        split_by = _normalize_split_by(split_by)
 
         engine_ = _select_engine(engine)
 
