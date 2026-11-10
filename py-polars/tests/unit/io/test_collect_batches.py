@@ -374,6 +374,7 @@ def test_collect_batches_prefetch(engine: EngineType, prefetch: int) -> None:
     )
 
     assert [f["x"].to_list() for f in frames] == [[0, 1], [2, 3], [4, 5]]
+    assert_frame_equal(pl.concat(frames), df)
 
 
 @pytest.mark.parametrize("prefetch", [0, -1])
@@ -444,6 +445,7 @@ def test_sink_batches_prefetch(engine: EngineType, prefetch: int) -> None:
         [6, 7],
         [8, 9],
     ]
+    assert_frame_equal(pl.concat(frames), df)
 
 
 @pytest.mark.parametrize("prefetch", [0, -1])

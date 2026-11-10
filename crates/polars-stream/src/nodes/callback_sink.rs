@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use polars_async::executor::{JoinHandle, TaskPriority, TaskScope};
 use polars_core::frame::DataFrame;
 use polars_core::runtime::ASYNC;
-use polars_error::{PolarsError, PolarsResult};
+use polars_error::{PolarsError, PolarsResult, polars_err};
 use polars_ops::frame::{first_run_len, split_by_key};
 use polars_plan::prelude::PlanCallback;
 use polars_utils::pl_str::PlSmallStr;
@@ -16,6 +16,7 @@ use crate::graph::PortState;
 use crate::nodes::ComputeNode;
 use crate::pipe::{RecvPort, SendPort};
 
+/// Shared stop/error state between the sink and the callback worker.
 #[derive(Debug, Default)]
 struct PrefetchState {
     stop: AtomicBool,
@@ -40,11 +41,11 @@ impl PrefetchState {
     }
 }
 
+/// Delivers a batch to the direct callback or to the prefetch worker.
 #[derive(Clone)]
 enum SinkSender {
     Direct(PlanCallback<DataFrame, bool>),
     Prefetch(PrefetchSender),
-    None,
 }
 
 impl SinkSender {
@@ -58,11 +59,11 @@ impl SinkSender {
                     .unwrap()
             },
             Self::Prefetch(sender) => sender.send(df).await,
-            Self::None => Ok(true),
         }
     }
 }
 
+/// Cloneable handle the sink uses to enqueue batches.
 #[derive(Clone)]
 struct PrefetchSender {
     tx: mpsc::Sender<DataFrame>,
@@ -71,6 +72,9 @@ struct PrefetchSender {
 
 impl PrefetchSender {
     async fn send(&self, df: DataFrame) -> PolarsResult<bool> {
+        if let Some(error) = self.state.take_error() {
+            return Err(error);
+        }
         if self.state.is_stopped() {
             return Ok(true);
         }
@@ -123,11 +127,9 @@ impl PrefetchWorker {
                     }
                 }
             })
-            .map_err(|error| {
-                PolarsError::ComputeError(
-                    format!("failed to spawn batch sink worker: {error}").into(),
-                )
-            })?;
+            .map_err(
+                |error| polars_err!(ComputeError: "failed to spawn batch sink worker: {}", error),
+            )?;
 
         Ok(Self {
             tx: Some(tx),
@@ -138,7 +140,7 @@ impl PrefetchWorker {
 
     fn sender(&self) -> PrefetchSender {
         PrefetchSender {
-            tx: self.tx.as_ref().unwrap().clone(),
+            tx: self.tx.as_ref().expect("batch sink queue is open").clone(),
             state: self.state.clone(),
         }
     }
@@ -150,7 +152,7 @@ impl PrefetchWorker {
         if let Some(handle) = self.handle.take() {
             handle
                 .join()
-                .map_err(|_| PolarsError::ComputeError("batch sink worker panicked".into()))?;
+                .map_err(|_| polars_err!(ComputeError: "batch sink worker panicked"))?;
         }
 
         match self.state.take_error() {
@@ -170,7 +172,7 @@ impl Drop for PrefetchWorker {
 }
 
 pub struct CallbackSinkNode {
-    sink: SinkSender,
+    sink: Option<SinkSender>,
     worker: Option<PrefetchWorker>,
     maintain_order: bool,
     split_by: Option<PlSmallStr>,
@@ -197,7 +199,7 @@ impl CallbackSinkNode {
         };
 
         Ok(Self {
-            sink,
+            sink: Some(sink),
             worker,
             maintain_order,
             split_by,
@@ -207,13 +209,62 @@ impl CallbackSinkNode {
             is_done: false,
         })
     }
+
+    fn sender(&self) -> SinkSender {
+        self.sink
+            .as_ref()
+            .expect("batch sink is set until the node completes")
+            .clone()
+    }
+
+    fn flush_and_finish(&mut self, state: &StreamingExecutionState) -> PolarsResult<()> {
+        let flush = if self.buffer.height() > 0 && !self.is_done {
+            let df = std::mem::take(&mut self.buffer);
+            if let Some(chunk_size) = self.chunk_size {
+                assert!(df.height() <= chunk_size.get());
+            }
+            Some(df)
+        } else {
+            None
+        };
+
+        if flush.is_none() && self.worker.is_none() {
+            return Ok(());
+        }
+
+        let sink = self
+            .sink
+            .take()
+            .expect("batch sink is set until the node completes");
+        let worker = self.worker.take();
+
+        state.spawn_subphase_task(async move {
+            let send_result = match flush {
+                Some(df) => sink.send(df).await.map(|_| ()),
+                None => Ok(()),
+            };
+            // Release the last sender before closing the queue, or the worker
+            // would never observe the channel close.
+            drop(sink);
+
+            let finish_result = match worker {
+                Some(mut worker) => ASYNC.spawn_blocking(move || worker.finish()).await.unwrap(),
+                None => Ok(()),
+            };
+
+            send_result?;
+            finish_result
+        });
+
+        Ok(())
+    }
 }
 
 impl Drop for CallbackSinkNode {
     fn drop(&mut self) {
         // Release the sender first so the queue closes; drop the worker
         // without joining because the callback may still be running.
-        self.sink = SinkSender::None;
+        self.sink.take();
         self.worker.take();
     }
 }
@@ -233,47 +284,10 @@ impl ComputeNode for CallbackSinkNode {
 
         if self.is_done || recv[0] == PortState::Done {
             recv[0] = PortState::Done;
-
-            let flush = if self.buffer.height() > 0 && !self.is_done {
-                let df = std::mem::take(&mut self.buffer);
-                if let Some(chunk_size) = self.chunk_size {
-                    assert!(df.height() <= chunk_size.get());
-                }
-                Some(df)
-            } else {
-                None
-            };
-
-            if flush.is_some() || self.worker.is_some() {
-                let sink = std::mem::replace(&mut self.sink, SinkSender::None);
-                let worker = self.worker.take();
-
-                state.spawn_subphase_task(async move {
-                    let send_result = match flush {
-                        Some(df) => sink.send(df).await.map(|_| ()),
-                        None => Ok(()),
-                    };
-                    // Release the last sender before closing the queue, or the
-                    // worker would never observe the channel close.
-                    drop(sink);
-
-                    let finish_result = match worker {
-                        Some(mut worker) => {
-                            ASYNC.spawn_blocking(move || worker.finish()).await.unwrap()
-                        },
-                        None => Ok(()),
-                    };
-
-                    send_result?;
-                    finish_result
-                });
-
-                return Ok(());
-            }
-        } else {
-            recv[0] = PortState::Ready;
+            return self.flush_and_finish(state);
         }
 
+        recv[0] = PortState::Ready;
         Ok(())
     }
 
@@ -342,7 +356,7 @@ impl ComputeNode for CallbackSinkNode {
                     }
 
                     for df in complete {
-                        let should_stop = self.sink.clone().send(df).await?;
+                        let should_stop = self.sender().send(df).await?;
 
                         if should_stop {
                             self.is_done = true;
@@ -365,7 +379,7 @@ impl ComputeNode for CallbackSinkNode {
                             .buffer
                             .split_at(self.buffer.height().min(chunk_size) as i64);
 
-                        let should_stop = self.sink.clone().send(df).await?;
+                        let should_stop = self.sender().send(df).await?;
 
                         if should_stop {
                             self.is_done = true;
