@@ -4071,7 +4071,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | Sequence[str] | None = None,
-        prefetch: int | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: Literal[False] = ...,
         engine: EngineType = "auto",
@@ -4085,7 +4085,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | Sequence[str] | None = None,
-        prefetch: int | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: Literal[True],
         engine: EngineType = "auto",
@@ -4099,7 +4099,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | Sequence[str] | None = None,
-        prefetch: int | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: bool = False,
         engine: EngineType = "auto",
@@ -4138,7 +4138,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             runs on a dedicated worker thread, so the query keeps producing
             while the current batch is processed; peak memory grows by at most
             this many batches. Only the streaming engine uses it. Defaults to
-            `None`, which runs the callback synchronously.
+            `1`, which keeps one batch prepared ahead; pass `None` to run the
+            callback synchronously.
         maintain_order
             Maintain the order in which data is processed.
             Setting this to `False` will be slightly faster.
@@ -4208,7 +4209,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | Sequence[str] | None = None,
-        prefetch: int | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: bool = False,
         engine: EngineType = "auto",

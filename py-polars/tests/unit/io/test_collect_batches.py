@@ -684,3 +684,17 @@ def test_split_by_multiple_columns_invalid(
 
     with pytest.raises(exc, match="split_by"):
         list(lf.collect_batches(split_by=bad))
+
+
+def test_sink_batches_sync_callback() -> None:
+    df = pl.DataFrame({"x": range(10)})
+    frames: list[pl.DataFrame] = []
+
+    df.lazy().sink_batches(
+        lambda frame: frames.append(frame),
+        chunk_size=2,
+        prefetch=None,
+        engine="streaming",
+    )
+
+    assert [f.height for f in frames] == [2, 2, 2, 2, 2]

@@ -202,14 +202,15 @@ class RemoteEngine(Engine):
         optimizations: QueryOptFlags,
         maintain_order: bool = True,
         chunk_size: int | None = None,
-        split_by: str | None = None,
+        split_by: list[str] | None = None,
         prefetch: int | None = None,
         lazy: bool = False,
     ) -> _CollectBatches:
         """See :meth:`polars.LazyFrame.collect_batches`."""
-        self._reject_if_set(
-            chunk_size=chunk_size, split_by=split_by, prefetch=prefetch, lazy=lazy
-        )
+        self._reject_if_set(chunk_size=chunk_size, split_by=split_by, lazy=lazy)
+        # `prefetch=1` is the local default and a no-op for the remote engine.
+        if prefetch not in (None, 1):
+            self._reject_if_set(prefetch=prefetch)
         # Polars Cloud streams the result back through `scan_arrow_c_stream`, so this
         # really is a `_CollectBatches`; its stubs just type it as a plain iterator.
         return self._target(lf).collect_batches(  # type: ignore[return-value]
