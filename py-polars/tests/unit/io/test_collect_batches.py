@@ -521,3 +521,33 @@ def test_sink_batches_prefetch_empty(engine: EngineType) -> None:
     )
 
     assert frames == []
+
+
+@pytest.mark.parametrize("stop_at", [0, 1, 31, 999])
+def test_sink_batches_prefetch_stop_with_full_queue(stop_at: int) -> None:
+    df = pl.DataFrame({"x": range(1000)})
+    seen: list[int] = []
+
+    def callback(frame: pl.DataFrame) -> bool:
+        seen.append(frame["x"][0])
+        return len(seen) > stop_at
+
+    df.lazy().sink_batches(callback, chunk_size=1, prefetch=32, engine="streaming")
+
+    assert len(seen) == stop_at + 1
+
+
+@pytest.mark.parametrize("error_at", [0, 1, 31, 500])
+def test_sink_batches_prefetch_error_with_full_queue(error_at: int) -> None:
+    df = pl.DataFrame({"x": range(1000)})
+    calls = 0
+
+    def callback(frame: pl.DataFrame) -> None:
+        nonlocal calls
+        if calls == error_at:
+            msg = "boom"
+            raise RuntimeError(msg)
+        calls += 1
+
+    with pytest.raises(RuntimeError, match="boom"):
+        df.lazy().sink_batches(callback, chunk_size=1, prefetch=32, engine="streaming")
