@@ -408,6 +408,7 @@ fn create_physical_plan_impl(
                 maintain_order: _,
                 chunk_size,
                 split_by,
+                prefetch: _,
             }) => {
                 let chunk_size = chunk_size.map_or(usize::MAX, Into::into);
 

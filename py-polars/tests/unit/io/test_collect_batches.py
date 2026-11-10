@@ -422,3 +422,102 @@ def test_collect_batches_prefetch_early_break() -> None:
     batches = df.lazy().collect_batches(chunk_size=1, prefetch=4)
     assert next(iter(batches))["x"].to_list() == [0]
     del batches
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+@pytest.mark.parametrize("prefetch", [1, 2, 8])
+def test_sink_batches_prefetch(engine: EngineType, prefetch: int) -> None:
+    df = pl.DataFrame({"x": range(10)})
+    frames: list[pl.DataFrame] = []
+
+    df.lazy().sink_batches(
+        lambda frame: frames.append(frame),
+        chunk_size=2,
+        prefetch=prefetch,
+        engine=engine,
+    )
+
+    assert [f["x"].to_list() for f in frames] == [
+        [0, 1],
+        [2, 3],
+        [4, 5],
+        [6, 7],
+        [8, 9],
+    ]
+
+
+@pytest.mark.parametrize("prefetch", [0, -1])
+def test_sink_batches_prefetch_invalid(prefetch: int) -> None:
+    lf = pl.DataFrame({"x": range(3)}).lazy()
+
+    with pytest.raises(ValueError, match="prefetch"):
+        lf.sink_batches(lambda _: None, prefetch=prefetch)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_sink_batches_prefetch_early_stop(engine: EngineType) -> None:
+    df = pl.DataFrame({"x": range(10)})
+    seen: list[int] = []
+
+    def callback(frame: pl.DataFrame) -> bool:
+        seen.append(frame["x"][0])
+        return True
+
+    df.lazy().sink_batches(callback, chunk_size=2, prefetch=4, engine=engine)
+
+    assert seen == [0]
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_sink_batches_prefetch_error(engine: EngineType) -> None:
+    df = pl.DataFrame({"x": range(10)})
+
+    def callback(frame: pl.DataFrame) -> None:
+        msg = "boom"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        df.lazy().sink_batches(callback, chunk_size=2, prefetch=4, engine=engine)
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_sink_batches_prefetch_split_by(engine: EngineType) -> None:
+    df = pl.DataFrame({"ts": [1, 1, 2, 2, 2, 3], "x": range(6)})
+    frames: list[pl.DataFrame] = []
+
+    df.lazy().sink_batches(
+        lambda frame: frames.append(frame),
+        split_by="ts",
+        prefetch=3,
+        engine=engine,
+    )
+
+    assert [f["ts"].to_list() for f in frames] == [[1, 1], [2, 2, 2], [3]]
+    assert_frame_equal(pl.concat(frames), df)
+
+
+def test_sink_batches_prefetch_lazy() -> None:
+    df = pl.DataFrame({"x": range(10)})
+    frames: list[pl.DataFrame] = []
+
+    out = df.lazy().sink_batches(  # type: ignore[call-overload]
+        lambda frame: frames.append(frame), chunk_size=2, prefetch=4, lazy=True
+    )
+    out.collect()
+
+    assert [f.height for f in frames] == [2, 2, 2, 2, 2]
+
+
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_sink_batches_prefetch_empty(engine: EngineType) -> None:
+    df = pl.DataFrame(schema={"ts": pl.Int64, "x": pl.Int64})
+    frames: list[pl.DataFrame] = []
+
+    df.lazy().sink_batches(
+        lambda frame: frames.append(frame),
+        split_by="ts",
+        prefetch=2,
+        engine=engine,
+    )
+
+    assert frames == []

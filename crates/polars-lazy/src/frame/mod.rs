@@ -789,6 +789,7 @@ impl LazyFrame {
             maintain_order,
             chunk_size,
             split_by,
+            None,
         )?;
         let runner = move || {
             // We use spawn_blocking here as it has a high blocking thread pool limit.
@@ -809,12 +810,20 @@ impl LazyFrame {
         Ok(collect_batches)
     }
 
+    /// Sink the query in batches.
+    ///
+    /// If `prefetch` is set, the callback runs on a dedicated worker thread
+    /// with a queue of that many batches, so the query keeps producing while
+    /// the callback processes the current batch. Peak memory grows by at most
+    /// that many batches. Only the streaming engine uses it; the in-memory
+    /// engine has already materialized the input.
     pub fn sink_batches(
         mut self,
         function: PlanCallback<DataFrame, bool>,
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
         split_by: Option<PlSmallStr>,
+        prefetch: Option<NonZeroUsize>,
     ) -> PolarsResult<Self> {
         use polars_plan::prelude::sink::CallbackSinkType;
 
@@ -840,6 +849,7 @@ impl LazyFrame {
                 maintain_order,
                 chunk_size,
                 split_by,
+                prefetch,
             }),
         };
 

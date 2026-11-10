@@ -289,6 +289,7 @@ class Engine(ABC):
         *,
         chunk_size: int | None,
         split_by: str | None,
+        prefetch: int | None,
         maintain_order: bool,
         optimizations: QueryOptFlags,
     ) -> None:
@@ -669,6 +670,7 @@ class _LocalEngine(Engine):
         *,
         chunk_size: int | None,
         split_by: str | None,
+        prefetch: int | None,
         maintain_order: bool,
         optimizations: QueryOptFlags,
     ) -> None:
@@ -679,6 +681,7 @@ class _LocalEngine(Engine):
                 function,
                 chunk_size=chunk_size,
                 split_by=split_by,
+                prefetch=prefetch,
                 maintain_order=maintain_order,
             ),
             optimizations=optimizations,

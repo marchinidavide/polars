@@ -247,6 +247,7 @@ pub enum PhysNodeKind {
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
         split_by: Option<PlSmallStr>,
+        prefetch: Option<NonZeroUsize>,
     },
 
     FileSink {

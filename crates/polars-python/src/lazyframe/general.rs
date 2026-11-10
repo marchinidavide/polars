@@ -990,7 +990,7 @@ impl PyLazyFrame {
         .map_err(Into::into)
     }
 
-    #[pyo3(signature = (function, maintain_order, chunk_size, split_by = None))]
+    #[pyo3(signature = (function, maintain_order, chunk_size, split_by = None, prefetch = None))]
     pub fn sink_batches(
         &self,
         py: Python<'_>,
@@ -998,6 +998,7 @@ impl PyLazyFrame {
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
         split_by: Option<Wrap<PlSmallStr>>,
+        prefetch: Option<NonZeroUsize>,
     ) -> PyResult<PyLazyFrame> {
         let ldf = self.ldf.read().clone();
         py.enter_polars(|| {
@@ -1006,6 +1007,7 @@ impl PyLazyFrame {
                 maintain_order,
                 chunk_size,
                 split_by.map(|s| s.0),
+                prefetch,
             )
         })
         .map(Into::into)

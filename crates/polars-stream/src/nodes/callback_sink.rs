@@ -1,20 +1,177 @@
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use polars_async::executor::{JoinHandle, TaskPriority, TaskScope};
 use polars_core::frame::DataFrame;
 use polars_core::runtime::ASYNC;
-use polars_error::PolarsResult;
+use polars_error::{PolarsError, PolarsResult};
 use polars_ops::frame::{first_run_len, split_by_key};
 use polars_plan::prelude::PlanCallback;
 use polars_utils::pl_str::PlSmallStr;
+use tokio::sync::mpsc;
 
 use crate::execute::StreamingExecutionState;
 use crate::graph::PortState;
 use crate::nodes::ComputeNode;
 use crate::pipe::{RecvPort, SendPort};
 
+#[derive(Debug, Default)]
+struct PrefetchState {
+    stop: AtomicBool,
+    error: Mutex<Option<PolarsError>>,
+}
+
+impl PrefetchState {
+    fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    fn take_error(&self) -> Option<PolarsError> {
+        self.error.lock().unwrap().take()
+    }
+
+    fn set_error(&self, error: PolarsError) {
+        let mut slot = self.error.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+enum SinkSender {
+    Direct(PlanCallback<DataFrame, bool>),
+    Prefetch(PrefetchSender),
+    None,
+}
+
+impl SinkSender {
+    async fn send(&self, df: DataFrame) -> PolarsResult<bool> {
+        match self {
+            Self::Direct(function) => {
+                let function = function.clone();
+                ASYNC
+                    .spawn_blocking(move || function.call(df))
+                    .await
+                    .unwrap()
+            },
+            Self::Prefetch(sender) => sender.send(df).await,
+            Self::None => Ok(true),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PrefetchSender {
+    tx: mpsc::Sender<DataFrame>,
+    state: Arc<PrefetchState>,
+}
+
+impl PrefetchSender {
+    async fn send(&self, df: DataFrame) -> PolarsResult<bool> {
+        if self.state.is_stopped() {
+            return Ok(true);
+        }
+
+        if self.tx.send(df).await.is_err() {
+            return match self.state.take_error() {
+                Some(error) => Err(error),
+                None => Ok(true),
+            };
+        }
+
+        match self.state.take_error() {
+            Some(error) => Err(error),
+            None => Ok(self.state.is_stopped()),
+        }
+    }
+}
+
+/// Runs the batch callback on a dedicated thread with a bounded queue.
+///
+/// The sink keeps producing while the callback processes the current batch;
+/// peak memory grows by at most `capacity` batches. The worker keeps draining
+/// after a stop or an error so that a sender blocked on a full queue is always
+/// released.
+struct PrefetchWorker {
+    tx: Option<mpsc::Sender<DataFrame>>,
+    state: Arc<PrefetchState>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PrefetchWorker {
+    fn new(capacity: NonZeroUsize, function: PlanCallback<DataFrame, bool>) -> PolarsResult<Self> {
+        let (tx, mut rx) = mpsc::channel(capacity.get());
+        let state = Arc::new(PrefetchState::default());
+        let worker_state = state.clone();
+
+        let handle = std::thread::Builder::new()
+            .name("polars-batch-sink".into())
+            .spawn(move || {
+                while let Some(df) = rx.blocking_recv() {
+                    if worker_state.is_stopped() {
+                        drop(df);
+                        continue;
+                    }
+
+                    match function.call(df) {
+                        Ok(true) => worker_state.stop.store(true, Ordering::Release),
+                        Ok(false) => {},
+                        Err(error) => worker_state.set_error(error),
+                    }
+                }
+            })
+            .map_err(|error| {
+                PolarsError::ComputeError(
+                    format!("failed to spawn batch sink worker: {error}").into(),
+                )
+            })?;
+
+        Ok(Self {
+            tx: Some(tx),
+            state,
+            handle: Some(handle),
+        })
+    }
+
+    fn sender(&self) -> PrefetchSender {
+        PrefetchSender {
+            tx: self.tx.as_ref().unwrap().clone(),
+            state: self.state.clone(),
+        }
+    }
+
+    /// Close the queue and wait for the callback worker to finish.
+    fn finish(&mut self) -> PolarsResult<()> {
+        self.tx.take();
+
+        if let Some(handle) = self.handle.take() {
+            handle
+                .join()
+                .map_err(|_| PolarsError::ComputeError("batch sink worker panicked".into()))?;
+        }
+
+        match self.state.take_error() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for PrefetchWorker {
+    fn drop(&mut self) {
+        // Closing the queue lets the worker exit once all senders are gone.
+        // Do not join here: on an error path the callback may still be
+        // running, and `finish` is where the sink waits for it.
+        self.tx.take();
+    }
+}
+
 pub struct CallbackSinkNode {
-    function: PlanCallback<DataFrame, bool>,
+    sink: SinkSender,
+    worker: Option<PrefetchWorker>,
     maintain_order: bool,
     split_by: Option<PlSmallStr>,
 
@@ -29,16 +186,35 @@ impl CallbackSinkNode {
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
         split_by: Option<PlSmallStr>,
-    ) -> Self {
-        Self {
-            function,
+        prefetch: Option<NonZeroUsize>,
+    ) -> PolarsResult<Self> {
+        let (sink, worker) = match prefetch {
+            Some(capacity) => {
+                let worker = PrefetchWorker::new(capacity, function)?;
+                (SinkSender::Prefetch(worker.sender()), Some(worker))
+            },
+            None => (SinkSender::Direct(function), None),
+        };
+
+        Ok(Self {
+            sink,
+            worker,
             maintain_order,
             split_by,
 
             buffer: DataFrame::empty(),
             chunk_size,
             is_done: false,
-        }
+        })
+    }
+}
+
+impl Drop for CallbackSinkNode {
+    fn drop(&mut self) {
+        // Release the sender first so the queue closes; drop the worker
+        // without joining because the callback may still be running.
+        self.sink = SinkSender::None;
+        self.worker.take();
     }
 }
 
@@ -58,20 +234,40 @@ impl ComputeNode for CallbackSinkNode {
         if self.is_done || recv[0] == PortState::Done {
             recv[0] = PortState::Done;
 
-            // Flush the last buffer
-            if self.buffer.height() > 0 && !self.is_done {
-                let function = self.function.clone();
+            let flush = if self.buffer.height() > 0 && !self.is_done {
                 let df = std::mem::take(&mut self.buffer);
                 if let Some(chunk_size) = self.chunk_size {
                     assert!(df.height() <= chunk_size.get());
                 }
+                Some(df)
+            } else {
+                None
+            };
+
+            if flush.is_some() || self.worker.is_some() {
+                let sink = std::mem::replace(&mut self.sink, SinkSender::None);
+                let worker = self.worker.take();
+
                 state.spawn_subphase_task(async move {
-                    ASYNC
-                        .spawn_blocking(move || function.call(df))
-                        .await
-                        .unwrap()?;
-                    Ok(())
+                    let send_result = match flush {
+                        Some(df) => sink.send(df).await.map(|_| ()),
+                        None => Ok(()),
+                    };
+                    // Release the last sender before closing the queue, or the
+                    // worker would never observe the channel close.
+                    drop(sink);
+
+                    let finish_result = match worker {
+                        Some(mut worker) => {
+                            ASYNC.spawn_blocking(move || worker.finish()).await.unwrap()
+                        },
+                        None => Ok(()),
+                    };
+
+                    send_result?;
+                    finish_result
                 });
+
                 return Ok(());
             }
         } else {
@@ -146,11 +342,7 @@ impl ComputeNode for CallbackSinkNode {
                     }
 
                     for df in complete {
-                        let function = self.function.clone();
-                        let should_stop = ASYNC
-                            .spawn_blocking(move || function.call(df))
-                            .await
-                            .unwrap()?;
+                        let should_stop = self.sink.clone().send(df).await?;
 
                         if should_stop {
                             self.is_done = true;
@@ -173,11 +365,7 @@ impl ComputeNode for CallbackSinkNode {
                             .buffer
                             .split_at(self.buffer.height().min(chunk_size) as i64);
 
-                        let function = self.function.clone();
-                        let should_stop = ASYNC
-                            .spawn_blocking(move || function.call(df))
-                            .await
-                            .unwrap()?;
+                        let should_stop = self.sink.clone().send(df).await?;
 
                         if should_stop {
                             self.is_done = true;

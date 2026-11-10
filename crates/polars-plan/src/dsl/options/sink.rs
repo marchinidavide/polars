@@ -244,6 +244,8 @@ pub struct CallbackSinkType {
     pub chunk_size: Option<NonZeroUsize>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub split_by: Option<PlSmallStr>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub prefetch: Option<NonZeroUsize>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

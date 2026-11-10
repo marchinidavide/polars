@@ -355,6 +355,7 @@ def _sink_batches_plan(
     *,
     chunk_size: int | None,
     split_by: str | None,
+    prefetch: int | None,
     maintain_order: bool,
 ) -> LazyFrame:
     """Attach a batch callback sink node to the plan, without executing it."""
@@ -367,5 +368,6 @@ def _sink_batches_plan(
         maintain_order=maintain_order,
         chunk_size=chunk_size,
         split_by=split_by,
+        prefetch=prefetch,
     )
     return wrap_ldf(ldf_py)

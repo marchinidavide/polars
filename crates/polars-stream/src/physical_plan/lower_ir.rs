@@ -462,6 +462,7 @@ fn lower_ir_inner(
                 maintain_order,
                 chunk_size,
                 split_by,
+                prefetch,
             }) => {
                 if split_by.is_none() {
                     disable_morsel_split.get_or_insert(true);
@@ -470,6 +471,7 @@ fn lower_ir_inner(
                 let maintain_order = *maintain_order;
                 let chunk_size = *chunk_size;
                 let split_by = split_by.clone();
+                let prefetch = *prefetch;
                 let phys_input = lower_ir!(*input)?;
                 PhysNodeKind::CallbackSink {
                     input: phys_input,
@@ -477,6 +479,7 @@ fn lower_ir_inner(
                     maintain_order,
                     chunk_size,
                     split_by,
+                    prefetch,
                 }
             },
 

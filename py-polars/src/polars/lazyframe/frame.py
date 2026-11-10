@@ -4069,6 +4069,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | None = None,
+        prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: Literal[False] = ...,
         engine: EngineType = "auto",
@@ -4082,6 +4083,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | None = None,
+        prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: Literal[True],
         engine: EngineType = "auto",
@@ -4095,6 +4097,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         *,
         chunk_size: int | None = None,
         split_by: str | None = None,
+        prefetch: int | None = None,
         maintain_order: bool = True,
         lazy: bool = False,
         engine: EngineType = "auto",
@@ -4128,6 +4131,12 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             sorted by this column so that each batch holds a single value;
             requires `maintain_order=True` and cannot be combined with
             `chunk_size`.
+        prefetch
+            The number of batches to buffer ahead of the callback. The callback
+            runs on a dedicated worker thread, so the query keeps producing
+            while the current batch is processed; peak memory grows by at most
+            this many batches. Only the streaming engine uses it. Defaults to
+            `None`, which runs the callback synchronously.
         maintain_order
             Maintain the order in which data is processed.
             Setting this to `False` will be slightly faster.
@@ -4164,6 +4173,10 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         >>> lf = pl.scan_csv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
         >>> lf.sink_batches(lambda df: print(df))  # doctest: +SKIP
         """
+        if prefetch is not None and prefetch < 1:
+            msg = "prefetch must be at least 1"
+            raise ValueError(msg)
+
         if lazy:
             # A lazy sink only attaches a sink node to the plan; an engine is
             # only chosen when the returned plan is collected.
@@ -4173,6 +4186,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
                 function,
                 chunk_size=chunk_size,
                 split_by=split_by,
+                prefetch=prefetch,
                 maintain_order=maintain_order,
             )
 
@@ -4181,6 +4195,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             function,
             chunk_size=chunk_size,
             split_by=split_by,
+            prefetch=prefetch,
             maintain_order=maintain_order,
             optimizations=optimizations,
         )
