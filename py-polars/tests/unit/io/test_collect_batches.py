@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -677,9 +677,7 @@ def test_split_by_multiple_columns_key_across_morsels(engine: EngineType) -> Non
         ([1], TypeError),
     ],
 )
-def test_split_by_multiple_columns_invalid(
-    bad: list[object], exc: type[Exception]
-) -> None:
+def test_split_by_multiple_columns_invalid(bad: Any, exc: type[Exception]) -> None:
     lf = pl.DataFrame({"sym": [1, 2], "day": [1, 2]}).lazy()
 
     with pytest.raises(exc, match="split_by"):
