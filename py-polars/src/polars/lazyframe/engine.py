@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import IO, TYPE_CHECKING, Any, ClassVar, Literal, overload
+from typing import IO, TYPE_CHECKING, Any, ClassVar, Literal, Self, overload
 
 from polars._dependencies import import_optional
 from polars._utils.async_ import _AioDataFrameResult, _GeventDataFrameResult
@@ -24,6 +24,7 @@ from polars.lazyframe.sink_plan import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
     from pathlib import Path
+    from types import TracebackType
 
     from rmm.mr import DeviceMemoryResource  # type: ignore[import-not-found]
 
@@ -158,6 +159,8 @@ class Engine(ABC):
         optimizations: QueryOptFlags,
         maintain_order: bool = True,
         chunk_size: int | None = None,
+        split_by: list[str] | None = None,
+        prefetch: int | None = None,
         lazy: bool = False,
     ) -> _CollectBatches:
         """Execute `lf`, yielding its result in batches."""
@@ -286,6 +289,8 @@ class Engine(ABC):
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None,
+        split_by: list[str] | None,
+        prefetch: int | None,
         maintain_order: bool,
         optimizations: QueryOptFlags,
     ) -> None:
@@ -434,6 +439,8 @@ class _LocalEngine(Engine):
         optimizations: QueryOptFlags,
         maintain_order: bool = True,
         chunk_size: int | None = None,
+        split_by: list[str] | None = None,
+        prefetch: int | None = None,
         lazy: bool = False,
     ) -> _CollectBatches:
         optimizations = self._with_monitoring(optimizations)
@@ -443,6 +450,8 @@ class _LocalEngine(Engine):
                 engine=self.name,
                 maintain_order=maintain_order,
                 chunk_size=chunk_size,
+                split_by=split_by,
+                prefetch=prefetch,
                 lazy=lazy,
             )
         )
@@ -661,6 +670,8 @@ class _LocalEngine(Engine):
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None,
+        split_by: list[str] | None,
+        prefetch: int | None,
         maintain_order: bool,
         optimizations: QueryOptFlags,
     ) -> None:
@@ -670,6 +681,8 @@ class _LocalEngine(Engine):
                 lf,
                 function,
                 chunk_size=chunk_size,
+                split_by=split_by,
+                prefetch=prefetch,
                 maintain_order=maintain_order,
             ),
             optimizations=optimizations,
@@ -681,15 +694,35 @@ class _CollectBatches:
     """Iterator over the batches produced by `Engine.collect_batches`."""
 
     def __init__(self, inner: PyCollectBatches) -> None:
-        self._inner = inner
+        self._inner: PyCollectBatches | None = inner
 
     def __iter__(self) -> _CollectBatches:
         return self
 
     def __next__(self) -> DataFrame:
+        if self._inner is None:
+            raise StopIteration
         return wrap_df(next(self._inner))
 
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Stop the query and release the producer."""
+        self._inner = None
+
     def __arrow_c_stream__(self, requested_schema: object | None = None) -> object:
+        if self._inner is None:
+            msg = "this batch iterator is closed"
+            raise ValueError(msg)
         return self._inner.__arrow_c_stream__(requested_schema)
 
 

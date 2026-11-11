@@ -267,7 +267,15 @@ def test_collect_batches_dispatches(
     assert calls[-1][2]["maintain_order"] is False
 
 
-@pytest.mark.parametrize("kwargs", [{"chunk_size": 100}, {"lazy": True}])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"chunk_size": 100},
+        {"split_by": "a"},
+        {"prefetch": 2},
+        {"lazy": True},
+    ],
+)
 @pytest.mark.usefixtures("_stub_cloud")
 def test_collect_batches_rejects_unsupported_options(
     lf: pl.LazyFrame, kwargs: dict[str, Any]

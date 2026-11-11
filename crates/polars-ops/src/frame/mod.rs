@@ -125,3 +125,64 @@ pub trait DataFrameOps: IntoDf {
         accumulate_dataframes_horizontal(cols)
     }
 }
+
+/// Build a single column that changes whenever any of `keys` changes.
+#[cfg(feature = "rle")]
+fn key_column(frame: &DataFrame, keys: &[PlSmallStr]) -> PolarsResult<Column> {
+    polars_ensure!(
+        !keys.is_empty(),
+        InvalidOperation: "split_by requires at least one column"
+    );
+
+    match keys {
+        [key] => Ok(frame.column(key.as_str())?.clone()),
+        _ => Ok(frame
+            .select(keys.iter().map(|key| key.as_str()))?
+            .into_struct(PlSmallStr::EMPTY)
+            .into_series()
+            .into_column()),
+    }
+}
+
+/// Split a frame into complete leading key groups and the trailing group.
+///
+/// The frame must be sorted by the key columns; every group except the
+/// trailing one is guaranteed to contain a single key tuple. Groups are views
+/// over the input frame.
+///
+#[cfg(feature = "rle")]
+pub fn split_by_key(
+    frame: &DataFrame,
+    keys: &[PlSmallStr],
+) -> PolarsResult<(Vec<DataFrame>, DataFrame)> {
+    let key = key_column(frame, keys)?;
+    let mut lengths = Vec::new();
+    crate::series::ops::rle_lengths(&key, &mut lengths)?;
+
+    let mut complete = Vec::with_capacity(lengths.len().saturating_sub(1));
+    let mut pending = DataFrame::empty();
+    let last = lengths.len().saturating_sub(1);
+    let mut offset = 0usize;
+
+    for (i, len) in lengths.iter().enumerate() {
+        let len = *len as usize;
+        let group = frame.slice(offset as i64, len);
+        if i == last {
+            pending = group;
+        } else {
+            complete.push(group);
+        }
+        offset += len;
+    }
+
+    Ok((complete, pending))
+}
+
+/// Return the length of the first run of equal key tuples in a sorted frame.
+#[cfg(feature = "rle")]
+pub fn first_run_len(frame: &DataFrame, keys: &[PlSmallStr]) -> PolarsResult<usize> {
+    let key = key_column(frame, keys)?;
+    let mut lengths = Vec::new();
+    crate::series::ops::rle_lengths(&key, &mut lengths)?;
+    Ok(lengths.first().copied().unwrap_or(0) as usize)
+}

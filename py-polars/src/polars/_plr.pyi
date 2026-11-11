@@ -994,7 +994,13 @@ class PyLazyFrame:
     def collect(self, engine: Any, lambda_post_opt: Any | None) -> PyDataFrame: ...
     def collect_with_callback(self, engine: Any, lambda_func: Any) -> None: ...
     def collect_batches(
-        self, engine: Any, maintain_order: bool, chunk_size: int | None, lazy: bool
+        self,
+        engine: Any,
+        maintain_order: bool,
+        chunk_size: int | None,
+        lazy: bool,
+        split_by: Sequence[str] | None = None,
+        prefetch: int | None = None,
     ) -> PyCollectBatches: ...
     def sink_parquet(
         self,
@@ -1053,6 +1059,8 @@ class PyLazyFrame:
         function: Callable[[PyDataFrame], bool],
         maintain_order: bool,
         chunk_size: int | None,
+        split_by: Sequence[str] | None = None,
+        prefetch: int | None = None,
     ) -> PyLazyFrame: ...
     def sink_iceberg(self, sink_state_obj: IcebergSinkState) -> PyLazyFrame: ...
     def filter(self, predicate: PyExpr) -> PyLazyFrame: ...

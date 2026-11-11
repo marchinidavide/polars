@@ -22,6 +22,8 @@ with contextlib.suppress(ImportError):  # Module not available when building doc
     from polars._plr import get_engine_affinity
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from polars._typing import EngineType, EngineTypeName
 
 
@@ -82,6 +84,36 @@ def _validate_engine(engine: EngineType) -> None:
     if isinstance(engine, Engine):
         return
     _engine_from_name(engine)
+
+
+def _validate_prefetch(prefetch: int | None) -> None:
+    """Validate a batch prefetch depth."""
+    if prefetch is not None and prefetch < 1:
+        msg = "prefetch must be at least 1"
+        raise ValueError(msg)
+
+
+def _normalize_split_by(split_by: str | Sequence[str] | None) -> list[str] | None:
+    """Normalize a split_by argument to a list of column names."""
+    if split_by is None:
+        return None
+    if isinstance(split_by, str):
+        if not split_by:
+            msg = "split_by must name at least one column"
+            raise ValueError(msg)
+        return [split_by]
+
+    columns = list(split_by)
+    if not columns:
+        msg = "split_by must name at least one column"
+        raise ValueError(msg)
+    if any(not isinstance(column, str) for column in columns):
+        msg = "split_by must contain column names"
+        raise TypeError(msg)
+    if len(set(columns)) != len(columns):
+        msg = "split_by contains duplicate columns"
+        raise ValueError(msg)
+    return columns
 
 
 def _select_engine(engine: EngineType) -> Engine:

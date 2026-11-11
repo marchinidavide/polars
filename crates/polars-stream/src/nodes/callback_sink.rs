@@ -1,19 +1,48 @@
+mod prefetch;
+
 use std::num::NonZeroUsize;
 
 use polars_async::executor::{JoinHandle, TaskPriority, TaskScope};
 use polars_core::frame::DataFrame;
 use polars_core::runtime::ASYNC;
 use polars_error::PolarsResult;
+use polars_ops::frame::{first_run_len, split_by_key};
 use polars_plan::prelude::PlanCallback;
+use polars_utils::pl_str::PlSmallStr;
 
+use self::prefetch::{PrefetchSender, PrefetchWorker};
 use crate::execute::StreamingExecutionState;
 use crate::graph::PortState;
 use crate::nodes::ComputeNode;
 use crate::pipe::{RecvPort, SendPort};
 
+/// Delivers a batch to the direct callback or to the prefetch worker.
+#[derive(Clone)]
+enum SinkSender {
+    Direct(PlanCallback<DataFrame, bool>),
+    Prefetch(PrefetchSender),
+}
+
+impl SinkSender {
+    async fn send(&self, df: DataFrame) -> PolarsResult<bool> {
+        match self {
+            Self::Direct(function) => {
+                let function = function.clone();
+                ASYNC
+                    .spawn_blocking(move || function.call(df))
+                    .await
+                    .unwrap()
+            },
+            Self::Prefetch(sender) => sender.send(df).await,
+        }
+    }
+}
+
 pub struct CallbackSinkNode {
-    function: PlanCallback<DataFrame, bool>,
+    sink: Option<SinkSender>,
+    worker: Option<PrefetchWorker>,
     maintain_order: bool,
+    split_by: Option<Vec<PlSmallStr>>,
 
     buffer: DataFrame,
     chunk_size: Option<NonZeroUsize>,
@@ -25,15 +54,85 @@ impl CallbackSinkNode {
         function: PlanCallback<DataFrame, bool>,
         maintain_order: bool,
         chunk_size: Option<NonZeroUsize>,
-    ) -> Self {
-        Self {
-            function,
+        split_by: Option<Vec<PlSmallStr>>,
+        prefetch: Option<NonZeroUsize>,
+    ) -> PolarsResult<Self> {
+        let (sink, worker) = match prefetch {
+            Some(capacity) => {
+                let worker = PrefetchWorker::new(capacity, function)?;
+                (SinkSender::Prefetch(worker.sender()), Some(worker))
+            },
+            None => (SinkSender::Direct(function), None),
+        };
+
+        Ok(Self {
+            sink: Some(sink),
+            worker,
             maintain_order,
+            split_by,
 
             buffer: DataFrame::empty(),
             chunk_size,
             is_done: false,
+        })
+    }
+
+    fn sender(&self) -> SinkSender {
+        self.sink
+            .as_ref()
+            .expect("batch sink is set until the node completes")
+            .clone()
+    }
+
+    fn flush_and_finish(&mut self, state: &StreamingExecutionState) -> PolarsResult<()> {
+        let flush = if self.buffer.height() > 0 && !self.is_done {
+            let df = std::mem::take(&mut self.buffer);
+            if let Some(chunk_size) = self.chunk_size {
+                assert!(df.height() <= chunk_size.get());
+            }
+            Some(df)
+        } else {
+            None
+        };
+
+        if flush.is_none() && self.worker.is_none() {
+            return Ok(());
         }
+
+        let sink = self
+            .sink
+            .take()
+            .expect("batch sink is set until the node completes");
+        let worker = self.worker.take();
+
+        state.spawn_subphase_task(async move {
+            let send_result = match flush {
+                Some(df) => sink.send(df).await.map(|_| ()),
+                None => Ok(()),
+            };
+            // Release the last sender before closing the queue, or the worker
+            // would never observe the channel close.
+            drop(sink);
+
+            let finish_result = match worker {
+                Some(mut worker) => ASYNC.spawn_blocking(move || worker.finish()).await.unwrap(),
+                None => Ok(()),
+            };
+
+            send_result?;
+            finish_result
+        });
+
+        Ok(())
+    }
+}
+
+impl Drop for CallbackSinkNode {
+    fn drop(&mut self) {
+        // Release the sender first so the queue closes; drop the worker
+        // without joining because the callback may still be running.
+        self.sink.take();
+        self.worker.take();
     }
 }
 
@@ -52,29 +151,10 @@ impl ComputeNode for CallbackSinkNode {
 
         if self.is_done || recv[0] == PortState::Done {
             recv[0] = PortState::Done;
-
-            // Flush the last buffer
-            if self.buffer.height() > 0 && !self.is_done {
-                let function = self.function.clone();
-                let df = std::mem::take(&mut self.buffer);
-
-                assert!(
-                    self.chunk_size
-                        .is_some_and(|chunk_size| self.buffer.height() <= chunk_size.get())
-                );
-                state.spawn_subphase_task(async move {
-                    ASYNC
-                        .spawn_blocking(move || function.call(df))
-                        .await
-                        .unwrap()?;
-                    Ok(())
-                });
-                return Ok(());
-            }
-        } else {
-            recv[0] = PortState::Ready;
+            return self.flush_and_finish(state);
         }
 
+        recv[0] = PortState::Ready;
         Ok(())
     }
 
@@ -97,31 +177,91 @@ impl ComputeNode for CallbackSinkNode {
                 && let Ok(m) = recv.recv().await
             {
                 let (sf, _, _, consume_token) = m.into_inner();
+                let morsel = sf.into_df().await;
 
-                // @NOTE: This also performs schema validation.
-                self.buffer.vstack_mut_owned(sf.into_df().await)?;
+                if let Some(keys) = self.split_by.clone() {
+                    if morsel.height() == 0 {
+                        drop(consume_token);
+                        continue;
+                    }
 
-                while self.buffer.height() > 0
-                    && self
-                        .chunk_size
-                        .is_none_or(|chunk_size| self.buffer.height() >= chunk_size.get())
-                {
-                    let chunk_size = self.chunk_size.map_or(usize::MAX, Into::into);
+                    let key = keys.as_slice();
+                    let mut complete = Vec::new();
 
-                    let df;
-                    (df, self.buffer) = self
-                        .buffer
-                        .split_at(self.buffer.height().min(chunk_size) as i64);
+                    if self.buffer.height() == 0 {
+                        let (mut groups, pending) = split_by_key(&morsel, key)?;
+                        self.buffer = pending;
+                        complete.append(&mut groups);
+                    } else {
+                        let continues = {
+                            let mut continues = true;
+                            for key in &keys {
+                                let last = self
+                                    .buffer
+                                    .column(key.as_str())?
+                                    .get(self.buffer.height() - 1)?;
+                                let first = morsel.column(key.as_str())?.get(0)?;
+                                if last != first {
+                                    continues = false;
+                                    break;
+                                }
+                            }
+                            continues
+                        };
 
-                    let function = self.function.clone();
-                    let should_stop = ASYNC
-                        .spawn_blocking(move || function.call(df))
-                        .await
-                        .unwrap()?;
+                        if !continues {
+                            complete.push(std::mem::take(&mut self.buffer));
+                            let (mut groups, pending) = split_by_key(&morsel, key)?;
+                            self.buffer = pending;
+                            complete.append(&mut groups);
+                        } else {
+                            let run = first_run_len(&morsel, key)?;
+                            if run == morsel.height() {
+                                self.buffer.vstack_mut_owned(morsel)?;
+                            } else {
+                                let head = morsel.slice(0, run);
+                                let mut group = std::mem::take(&mut self.buffer);
+                                group.vstack_mut_owned(head)?;
+                                complete.push(group);
 
-                    if should_stop {
-                        self.is_done = true;
-                        break;
+                                let rest = morsel.slice(run as i64, morsel.height() - run);
+                                let (mut groups, pending) = split_by_key(&rest, key)?;
+                                self.buffer = pending;
+                                complete.append(&mut groups);
+                            }
+                        }
+                    }
+
+                    for df in complete {
+                        let should_stop = self.sender().send(df).await?;
+
+                        if should_stop {
+                            self.is_done = true;
+                            break;
+                        }
+                    }
+                } else {
+                    // @NOTE: This also performs schema validation.
+                    self.buffer.vstack_mut_owned(morsel)?;
+
+                    while self.buffer.height() > 0
+                        && self
+                            .chunk_size
+                            .is_none_or(|chunk_size| self.buffer.height() >= chunk_size.get())
+                    {
+                        let chunk_size = self.chunk_size.map_or(usize::MAX, Into::into);
+
+                        let df;
+                        (df, self.buffer) = self
+                            .buffer
+                            .split_at(self.buffer.height().min(chunk_size) as i64);
+
+                        let should_stop = self.sender().send(df).await?;
+
+                        if should_stop {
+                            self.is_done = true;
+                            break;
+                        }
                     }
                 }
                 drop(consume_token);

@@ -98,8 +98,10 @@ from polars.datatypes.group import DataTypeGroup
 from polars.exceptions import InvalidOperationError, PerformanceWarning
 from polars.lazyframe.engine_config import (
     _eager_engine,
+    _normalize_split_by,
     _select_engine,
     _validate_engine,
+    _validate_prefetch,
 )
 from polars.lazyframe.group_by import LazyGroupBy
 from polars.lazyframe.opt_flags import DEFAULT_QUERY_OPT_FLAGS, REMOVED_OLD_OPT_FLAGS
@@ -4068,6 +4070,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None = None,
+        split_by: str | Sequence[str] | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: Literal[False] = ...,
         engine: EngineType = "auto",
@@ -4080,6 +4084,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None = None,
+        split_by: str | Sequence[str] | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: Literal[True],
         engine: EngineType = "auto",
@@ -4092,6 +4098,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         function: Callable[[DataFrame], bool | None],
         *,
         chunk_size: int | None = None,
+        split_by: str | Sequence[str] | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: bool = False,
         engine: EngineType = "auto",
@@ -4120,6 +4128,18 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             early stopping.
         chunk_size
             The number of rows that are buffered before the callback is called.
+        split_by
+            Split batches at every change of these columns. The data must be
+            sorted by all columns (lexicographically) so that each batch holds
+            a single key tuple; requires `maintain_order=True` and cannot be
+            combined with `chunk_size`.
+        prefetch
+            The number of batches to buffer ahead of the callback. The callback
+            runs on a dedicated worker thread, so the query keeps producing
+            while the current batch is processed; peak memory grows by at most
+            this many batches. Only the streaming engine uses it. Defaults to
+            `1`, which keeps one batch prepared ahead; pass `None` to run the
+            callback synchronously.
         maintain_order
             Maintain the order in which data is processed.
             Setting this to `False` will be slightly faster.
@@ -4156,6 +4176,9 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         >>> lf = pl.scan_csv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
         >>> lf.sink_batches(lambda df: print(df))  # doctest: +SKIP
         """
+        _validate_prefetch(prefetch)
+        split_by = _normalize_split_by(split_by)
+
         if lazy:
             # A lazy sink only attaches a sink node to the plan; an engine is
             # only chosen when the returned plan is collected.
@@ -4164,6 +4187,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
                 self,
                 function,
                 chunk_size=chunk_size,
+                split_by=split_by,
+                prefetch=prefetch,
                 maintain_order=maintain_order,
             )
 
@@ -4171,6 +4196,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             self,
             function,
             chunk_size=chunk_size,
+            split_by=split_by,
+            prefetch=prefetch,
             maintain_order=maintain_order,
             optimizations=optimizations,
         )
@@ -4181,6 +4208,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         self,
         *,
         chunk_size: int | None = None,
+        split_by: str | Sequence[str] | None = None,
+        prefetch: int | None = 1,
         maintain_order: bool = True,
         lazy: bool = False,
         engine: EngineType = "auto",
@@ -4192,7 +4221,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         This allows streaming results that are larger than RAM to be written to disk.
 
         The query will always be fully executed unless `stop` is called, so you should
-        call next until all chunks have been seen.
+        call next until all chunks have been seen. The returned iterator can be used
+        as a context manager; closing it stops the query and releases the producer.
 
         .. engine-support:: streaming
 
@@ -4208,6 +4238,16 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
         ----------
         chunk_size
             The number of rows that are buffered before a chunk is given.
+        split_by
+            Split batches at every change of these columns. The data must be
+            sorted by all columns (lexicographically) so that each batch holds
+            a single key tuple; requires `maintain_order=True` and cannot be
+            combined with `chunk_size`.
+        prefetch
+            The number of batches to buffer ahead of the consumer. The producer
+            may run up to this many batches ahead, so peak memory grows by at
+            most that many batches. Defaults to `1`, which already lets the
+            producer prepare the next batch while the current one is processed.
         maintain_order
             Maintain the order in which data is processed.
             Setting this to `False` will be slightly faster.
@@ -4237,10 +4277,19 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
 
         Examples
         --------
+        >>> lf = pl.LazyFrame({"ts": [1, 1, 2], "x": [1, 2, 3]})
+        >>> for batch in lf.collect_batches(split_by="ts"):
+        ...     print(batch["ts"].to_list())
+        [1, 1]
+        [2]
+
         >>> lf = pl.scan_csv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
         >>> for df in lf.collect_batches():
         ...     print(df)  # doctest: +SKIP
         """
+        _validate_prefetch(prefetch)
+        split_by = _normalize_split_by(split_by)
+
         engine_ = _select_engine(engine)
 
         if engine_.name == "auto":
@@ -4251,6 +4300,8 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             optimizations=optimizations,
             maintain_order=maintain_order,
             chunk_size=chunk_size,
+            split_by=split_by,
+            prefetch=prefetch,
             lazy=lazy,
         )
 
